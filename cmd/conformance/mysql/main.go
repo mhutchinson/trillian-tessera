@@ -29,6 +29,7 @@ import (
 
 	tessera "github.com/transparency-dev/trillian-tessera"
 	"github.com/transparency-dev/trillian-tessera/api/layout"
+	"github.com/transparency-dev/trillian-tessera/storage"
 	"github.com/transparency-dev/trillian-tessera/storage/mysql"
 	"golang.org/x/mod/sumdb/note"
 	"k8s.io/klog/v2"
@@ -62,17 +63,18 @@ func main() {
 	noteSigner, additionalSigners := createSignersOrDie()
 
 	// Initialise the Tessera MySQL storage
-	storage, err := mysql.New(ctx, db,
+	driver, err := mysql.New(ctx, db,
 		tessera.WithCheckpointSigner(noteSigner, additionalSigners...),
 		tessera.WithCheckpointInterval(*publishInterval),
 	)
 	if err != nil {
 		klog.Exitf("Failed to create new MySQL storage: %v", err)
 	}
-	dedupeAdd := tessera.InMemoryDedupe(storage.Add, 256)
+	appender := storage.NewAppender(driver)
+	dedupeAdd := tessera.InMemoryDedupe(appender.Add, 256)
 
 	// Set up the handlers for the tlog-tiles GET methods, and a custom handler for HTTP POSTs to /add
-	configureTilesReadAPI(http.DefaultServeMux, storage)
+	configureTilesReadAPI(http.DefaultServeMux, appender)
 	http.HandleFunc("POST /add", func(w http.ResponseWriter, r *http.Request) {
 		b, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -139,9 +141,9 @@ func createSignerOrDie(s string) note.Signer {
 // routing the requests to the mysql storage.
 // This method could be moved into the storage API as it's likely this will be
 // the same for any implementation of a personality based on MySQL.
-func configureTilesReadAPI(mux *http.ServeMux, storage *mysql.Storage) {
+func configureTilesReadAPI(mux *http.ServeMux, appender storage.Appender) {
 	mux.HandleFunc("GET /checkpoint", func(w http.ResponseWriter, r *http.Request) {
-		checkpoint, err := storage.ReadCheckpoint(r.Context())
+		checkpoint, err := appender.ReadCheckpoint(r.Context())
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				w.WriteHeader(http.StatusNotFound)
@@ -171,7 +173,7 @@ func configureTilesReadAPI(mux *http.ServeMux, storage *mysql.Storage) {
 			}
 			return
 		}
-		tile, err := storage.ReadTile(r.Context(), level, index, p)
+		tile, err := appender.ReadTile(r.Context(), level, index, p)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				w.WriteHeader(http.StatusNotFound)
@@ -200,7 +202,7 @@ func configureTilesReadAPI(mux *http.ServeMux, storage *mysql.Storage) {
 			return
 		}
 
-		entryBundle, err := storage.ReadEntryBundle(r.Context(), index, p)
+		entryBundle, err := appender.ReadEntryBundle(r.Context(), index, p)
 		if err != nil {
 			klog.Errorf("/tile/entries/{index...}: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
