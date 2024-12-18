@@ -21,22 +21,41 @@ import (
 	"github.com/transparency-dev/trillian-tessera/internal/driver"
 )
 
+// Driver is an envelope containing implementations of the lower level operations used in Tessera.
+// Personalities are not able to use any of the contents of this object directly, because the types
+// for all of the sub-structs are defined in an internal directory. This is intentional.
+//
+// Expected usage it to acquire a Driver and then pass it to one of the New* lifecycle creators below.
 type Driver struct {
 	Readers   driver.Readers
 	Appenders driver.Appenders
 }
 
+// LogReader provides read-only access to the log.
 type LogReader struct {
-	ReadCheckpoint  func(ctx context.Context) ([]byte, error)
-	ReadTile        func(ctx context.Context, level, index uint64, p uint8) ([]byte, error)
+	// TODO(mhutchinson): Write out the full docs for this here
+	ReadCheckpoint func(ctx context.Context) ([]byte, error)
+
+	// TODO(mhutchinson): Write out the full docs for this here
+	ReadTile func(ctx context.Context, level, index uint64, p uint8) ([]byte, error)
+
+	// TODO(mhutchinson): Write out the full docs for this here
 	ReadEntryBundle func(ctx context.Context, index uint64, p uint8) ([]byte, error)
 }
 
+// Appender allows new entries to be added to the log, and the contents of the log to be read.
 type Appender struct {
 	LogReader
+
+	// Add adds a new entry to be sequenced.
+	// TODO(mhutchinson): Write out the full docs for this here
 	Add func(ctx context.Context, entry *tessera.Entry) tessera.IndexFuture
 }
 
+// NewAppender returns an Appender, which allows a personality to incrementally append new
+// leaves to the log and to read from it.
+//
+// TODO(mhutchinson): work out how to put the dedupe stuff into this method params.
 func NewAppender(d Driver) Appender {
 	return Appender{
 		LogReader: newLogReader(d),
