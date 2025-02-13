@@ -101,6 +101,7 @@ type AppendOptions struct {
 	EntriesPath func(n uint64, p uint8) string
 
 	CheckpointInterval time.Duration
+	Witnesses          WitnessGroup
 
 	AddDecorators []func(AddFn) AddFn
 }
