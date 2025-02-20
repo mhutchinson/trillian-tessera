@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 
 	tessera "github.com/transparency-dev/trillian-tessera"
@@ -30,16 +31,26 @@ import (
 	"k8s.io/klog/v2"
 )
 
-func NewWitnessGateway(group tessera.WitnessGroup, client *http.Client) WitnessGateway {
+type ProofFetchFn func(ctx context.Context, from, to uint64) [][]byte
+
+func NewWitnessGateway(group tessera.WitnessGroup, client *http.Client, fetchProof ProofFetchFn) WitnessGateway {
 	urls := group.URLs()
 	slices.Sort(urls)
 	urls = slices.Compact(urls)
 	witnesses := make([]witness, len(urls))
+	postFnImpl := func(ctx context.Context, url string, body string) (resp *http.Response, err error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		return client.Do(req)
+	}
 	for _, u := range urls {
 		witnesses = append(witnesses, witness{
-			url:  u,
-			size: 0,
-			post: client.Post,
+			url:        u,
+			size:       0,
+			post:       postFnImpl,
+			fetchProof: fetchProof,
 		})
 	}
 	return WitnessGateway{
@@ -54,38 +65,73 @@ type WitnessGateway struct {
 }
 
 func (wg WitnessGateway) Witness(ctx context.Context, cp []byte) ([]byte, error) {
+	// TODO(mhutchinson): also set a deadline?
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var waitGroup sync.WaitGroup
 	_, size, err := parse.CheckpointUnsafe(cp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse checkpoint from log: %v", err)
 	}
 
+	type sigOrErr struct {
+		sig []byte
+		err error
+	}
+	results := make(chan sigOrErr)
+
+	// Kick off a goroutine for each witness and send result to results chan
 	for _, w := range wg.witnesses {
 		waitGroup.Add(1)
-
 		go func() {
 			defer waitGroup.Done()
-			w.update(cp, size)
+			sig, err := w.update(ctx, cp, size)
+			results <- sigOrErr{
+				sig: sig,
+				err: err,
+			}
 		}()
-
 	}
-	waitGroup.Wait()
-	return nil, errors.New("not done yet m8")
+
+	go func() {
+		waitGroup.Wait()
+		close(results)
+	}()
+
+	// Consume the results coming back from each witness
+	var sigBlock bytes.Buffer
+	sigBlock.Write(cp)
+	for r := range results {
+		if r.err != nil {
+			err = errors.Join(err, r.err)
+			continue
+		}
+		// Add new signature to the new note we're building
+		sigBlock.Write(r.sig)
+		sigBlock.WriteRune('\n')
+
+		// See whether the group is satisfied now
+		if newCp := sigBlock.Bytes(); wg.group.Satisfied(newCp) {
+			return newCp, nil
+		}
+	}
+
+	// We can only get here if all witnesses have returned and we're still not satisfied.
+	return nil, err
 }
 
-type PostFn func(url, contentType string, body io.Reader) (resp *http.Response, err error)
-
-type ProofFetchFn func(from, to uint64) [][]byte
+type postFn func(ctx context.Context, url, body string) (resp *http.Response, err error)
 
 type witness struct {
 	url        string
 	size       uint64
-	post       PostFn
+	post       postFn
 	fetchProof ProofFetchFn
 }
 
-func (w witness) update(cp []byte, size uint64) ([]byte, error) {
-	proof := w.fetchProof(w.size, size)
+func (w witness) update(ctx context.Context, cp []byte, size uint64) ([]byte, error) {
+	proof := w.fetchProof(ctx, w.size, size)
 
 	// The request body MUST be a sequence of
 	// - a previous size line,
@@ -99,7 +145,7 @@ func (w witness) update(cp []byte, size uint64) ([]byte, error) {
 	body += "\n"
 	body += string(cp)
 
-	resp, err := w.post(w.url, "", bytes.NewReader([]byte(body)))
+	resp, err := w.post(ctx, w.url, body)
 	if err != nil {
 		klog.Warningf("Failed to post to witness at %q: %v", w.url, err)
 	}
@@ -117,6 +163,8 @@ func (w witness) update(cp []byte, size uint64) ([]byte, error) {
 	}
 	_ = resp.Body.Close()
 
+	// TODO(mhutchinson): this will need to take a verifier to understand which sig to extract.
+	// For now, it just takes the last signature line.
 	lines := bytes.Split(rb, []byte{'\n'})
 	for _, l := range lines {
 		if len(l) > 0 {
