@@ -165,7 +165,7 @@ func overwrite(name string, d []byte) error {
 // Multiple programs or goroutines calling CreateTemp simultaneously will not choose the same file.
 // It is the caller's responsibility to remove the file when it is no longer needed.
 //
-// Ths file data is written with O_SYNC, however the containing directory is NOT sync'd on the assumption
+// The file data is synced to disk before returning, however the containing directory is NOT sync'd on the assumption
 // that this temporary file will be linked/renamed by the caller who will also sync the directory.
 func createTemp(prefix string, d []byte) (name string, err error) {
 	try := 0
@@ -173,7 +173,7 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 
 	for {
 		name = prefix + strconv.Itoa(int(rand.Int32()))
-		f, err = os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|os.O_SYNC, filePerm)
+		f, err = os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
 		if err == nil {
 			break
 		} else if errors.Is(err, os.ErrExist) {
@@ -196,6 +196,10 @@ func createTemp(prefix string, d []byte) (name string, err error) {
 		return "", fmt.Errorf("failed to write to temporary file %q: %w", name, err)
 	} else if l := len(d); n < l {
 		return "", fmt.Errorf("short write on %q, %d < %d", name, n, l)
+	}
+
+	if err := f.Sync(); err != nil {
+		return "", fmt.Errorf("failed to sync temporary file %q: %w", name, err)
 	}
 
 	return name, nil
