@@ -16,7 +16,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.104.0
 	github.com/aws/smithy-go v1.27.2
-	github.com/bitfield/script v0.24.3
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
@@ -76,8 +75,6 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/itchyny/gojq v0.12.13 // indirect
-	github.com/itchyny/timefmt-go v0.1.5 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
@@ -97,7 +94,6 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	modernc.org/sqlite v1.52.0 // indirect
-	mvdan.cc/sh/v3 v3.7.0 // indirect
 )
 
 require (

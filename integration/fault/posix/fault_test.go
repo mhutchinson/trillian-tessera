@@ -20,17 +20,19 @@
 package fault_test
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"log/slog"
 
-	"github.com/bitfield/script"
 	"github.com/transparency-dev/formats/note"
 	"github.com/transparency-dev/merkle/rfc6962"
 	"github.com/transparency-dev/tessera/api"
@@ -83,8 +85,8 @@ func runFaultInjectionTest(t *testing.T, inject string) {
 	// Set up base log:
 	{
 		mustWrite(t, filepath.Join(baseDir, "base-0"), []byte("base first"))
-		p := script.Exec(growLogCommand(baseDir, filepath.Join(baseDir, "base-0")))
-		if output, err := p.String(); err != nil {
+		output, err := runCmd(growLogCommand(baseDir, filepath.Join(baseDir, "base-0")))
+		if err != nil {
 			t.Fatalf("Failed to create base log: %v\n%s", err, output)
 		}
 	}
@@ -95,13 +97,12 @@ func runFaultInjectionTest(t *testing.T, inject string) {
 	{
 		traceDir := filepath.Join(tmp, "trace")
 		_ = os.MkdirAll(traceDir, 0o755)
-		if output, err := script.Exec(fmt.Sprintf("cp -r %s/. %s/", baseDir, traceDir)).String(); err != nil {
+		if output, err := runCmd(fmt.Sprintf("cp -r %s/. %s/", baseDir, traceDir)); err != nil {
 			t.Fatalf("Failed to copy base log into trace directory %q: %v\n%s", traceDir, err, output)
 		}
 		mustWrite(t, filepath.Join(traceDir, "trace-0"), []byte("trace first"))
-		traceRun := script.Exec(fmt.Sprintf("strace -f -e trace=%s -e quiet=all %s", strings.Join(interestingSyscalls, ","), growLogCommand(traceDir, filepath.Join(traceDir, "trace-0"))))
-		traceRun.FilterScan(processFn)
-		o, err := traceRun.String()
+		traceCmd := fmt.Sprintf("strace -f -e trace=%s -e quiet=all %s", strings.Join(interestingSyscalls, ","), growLogCommand(traceDir, filepath.Join(traceDir, "trace-0")))
+		o, err := runCmdWithFilter(traceCmd, processFn)
 		if err != nil {
 			t.Errorf("traceRun failed: %v\n%s", err, o)
 		}
@@ -121,7 +122,7 @@ func runFaultInjectionTest(t *testing.T, inject string) {
 				// Fork the base log into a new directory.
 				injectDir := filepath.Join(tmp, fmt.Sprintf("inject-%s-%d", sc, i))
 				_ = os.MkdirAll(injectDir, 0o755)
-				if output, err := script.Exec(fmt.Sprintf("cp -r %s/. %s/", baseDir, injectDir)).String(); err != nil {
+				if output, err := runCmd(fmt.Sprintf("cp -r %s/. %s/", baseDir, injectDir)); err != nil {
 					t.Fatalf("Failed to copy base log into directory %q: %v\n%s", injectDir, err, output)
 				}
 
@@ -130,7 +131,7 @@ func runFaultInjectionTest(t *testing.T, inject string) {
 				// left in a self-consistent state.
 				mustWrite(t, filepath.Join(injectDir, "inject-0"), fmt.Appendf(nil, "inject-%d first", i))
 				cmd := fmt.Sprintf("strace -f -e inject=%s:%s:when=%d -e quiet=all %s", sc, inject, i, growLogCommand(injectDir, filepath.Join(injectDir, "inject-0")))
-				if _, err := script.Exec(cmd).String(); err != nil {
+				if _, err := runCmd(cmd); err != nil {
 					t.Logf("Failed to growLog on %s: %v", injectDir, err)
 				}
 
@@ -163,7 +164,7 @@ func setup(t *testing.T, outDir string) {
 	signerPath = filepath.Join(outDir, "test.sec")
 	verifierPath = filepath.Join(outDir, "test.pub")
 
-	if o, err := script.Exec(fmt.Sprintf("go build -o %s ../../../cmd/examples/posix-oneshot", oneshotPath)).String(); err != nil {
+	if o, err := runCmd(fmt.Sprintf("go build -o %s ../../../cmd/examples/posix-oneshot", oneshotPath)); err != nil {
 		t.Fatalf("Failed to build posix-oneshot: %v\n%s", err, o)
 	}
 
@@ -277,4 +278,32 @@ func mustWrite(t *testing.T, path string, contents []byte) {
 	if err := os.WriteFile(path, contents, 0o644); err != nil {
 		t.Fatalf("Failed to write %q: %v", path, err)
 	}
+}
+
+func runCmd(cmdStr string) (string, error) {
+	cmd := exec.Command("sh", "-c", cmdStr)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	output := stdout.String() + stderr.String()
+	return output, err
+}
+
+func runCmdWithFilter(cmdStr string, processFn func(string, io.Writer)) (string, error) {
+	cmd := exec.Command("sh", "-c", cmdStr)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	combined := stdout.String() + stderr.String()
+	var filtered bytes.Buffer
+	scanner := bufio.NewScanner(strings.NewReader(combined))
+	for scanner.Scan() {
+		line := scanner.Text()
+		processFn(line, &filtered)
+	}
+
+	return filtered.String(), err
 }
